@@ -1,0 +1,27 @@
+[package]
+name = "cm"
+version = "0.1.0"
+edition = "2021"
+description = "Ergonomic, non-interactive CLI for persistent GPT conversations against a Mirror (chatgpt-mirror) OpenAI-compatible chat-completions API."
+license = "MIT"
+
+[[bin]]
+name = "cm"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
+directories = "5"
+anyhow = "1"
+futures-util = "0.3"
+bytes = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
