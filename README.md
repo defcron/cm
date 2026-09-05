@@ -36,7 +36,7 @@ cargo build --release
 Configure it with a `.env` file (copy `.env.example`) or real env vars:
 
 - `CM_BASE_URL` - your Mirror server, e.g. `http://localhost:8799`
-- `CM_API_KEY` - your Mirror `MIRROR_API_KEY`, if the server requires one
+- `CM_API_KEY` - explicit override for the bearer token cm sends, if you want cm to use a different key than the rest of Mirror. If unset, cm falls back in order to `MIRROR_API_KEY`, then the first entry in `MIRROR_API_KEYS` (Mirror's own comma-separated multi-key env var - same names the server itself reads), then `OPENAI_API_KEY` as a last resort. So a `.env` shared with your Mirror server's own `MIRROR_API_KEY`/`MIRROR_API_KEYS` just works with no duplication.
 - `CM_MODEL` - default model/gizmo/project id (default `auto`)
 - `CM_THREAD` - default thread name (default `default`)
 - `CM_STREAM` - `false` to disable streaming by default
