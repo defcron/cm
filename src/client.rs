@@ -97,10 +97,15 @@ pub async fn send_message(
     }
 
     if stream {
-        let reply = read_sse_stream(resp).await?;
+        let (reply, stream_conversation_id) = read_sse_stream(resp).await?;
         Ok(SendResult {
             reply,
-            conversation_id: new_conversation_id,
+            // Mirror can't set the x-mirror-conversation-id HTTP header on a
+            // streamed reply (headers are already flushed by the time the
+            // conversation id is known for a brand-new thread), so it sends
+            // an SSE comment line instead - see read_sse_stream. Prefer the
+            // header if we somehow got one, else fall back to that.
+            conversation_id: new_conversation_id.or(stream_conversation_id),
         })
     } else {
         let json: Value = resp.json().await.context("parsing JSON response")?;
@@ -119,10 +124,17 @@ pub async fn send_message(
 /// objects, printing each delta's content to stdout as it arrives (flushed
 /// per chunk for a responsive feel) and returning the full accumulated
 /// reply text once `data: [DONE]` is seen or the stream ends.
-async fn read_sse_stream(resp: reqwest::Response) -> Result<String> {
+///
+/// Also watches for Mirror's out-of-band `: mirror-conversation-id <id>` SSE
+/// comment line - a plain HTTP header can't be used here because, for a
+/// brand-new conversation, Mirror doesn't know the id yet when it has to
+/// flush the response headers to open the stream, so it sends the id as an
+/// SSE comment (ignored by any spec-compliant SSE client) once it's known.
+async fn read_sse_stream(resp: reqwest::Response) -> Result<(String, Option<String>)> {
     let mut byte_stream = resp.bytes_stream();
     let mut buf = String::new();
     let mut full_reply = String::new();
+    let mut conversation_id: Option<String> = None;
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
 
@@ -136,6 +148,14 @@ async fn read_sse_stream(resp: reqwest::Response) -> Result<String> {
         while let Some(pos) = buf.find('\n') {
             let line = buf[..pos].trim_end_matches('\r').to_string();
             buf.drain(..=pos);
+
+            if let Some(rest) = line.strip_prefix(':') {
+                if let Some(id) = rest.trim().strip_prefix("mirror-conversation-id ") {
+                    conversation_id = Some(id.trim().to_string());
+                }
+                continue;
+            }
+
             let Some(data) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:"))
             else {
                 continue;
@@ -146,7 +166,7 @@ async fn read_sse_stream(resp: reqwest::Response) -> Result<String> {
             }
             if data == "[DONE]" {
                 let _ = lock.flush();
-                return Ok(full_reply);
+                return Ok((full_reply, conversation_id));
             }
             let Ok(json): Result<Value, _> = serde_json::from_str(data) else {
                 continue;
@@ -159,5 +179,5 @@ async fn read_sse_stream(resp: reqwest::Response) -> Result<String> {
         }
     }
     let _ = lock.flush();
-    Ok(full_reply)
+    Ok((full_reply, conversation_id))
 }
