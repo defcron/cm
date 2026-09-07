@@ -1,5 +1,7 @@
 # cm
 
+See [TODO.md](TODO.md) for prioritized remaining work, verification gaps, and suggested improvements.
+
 A small, non-interactive Rust CLI for chatting with GPTs through Mirror's
 OpenAI-compatible `/v1/chat/completions` endpoint. No TUI, no REPL - just a
 command you run each time, with the conversation persisting across runs by
