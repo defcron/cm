@@ -5,6 +5,7 @@ mod state;
 use anyhow::{bail, Result};
 use clap::Parser;
 use std::io::{IsTerminal, Read, Write};
+use std::process::Command;
 
 use config::Config;
 use state::StateFile;
@@ -51,6 +52,19 @@ struct Cli {
     #[arg(long)]
     show_id: bool,
 
+    /// Treat the assistant response as shell commands: print it to stderr and execute it
+    /// immediately using the current user's $SHELL without prompting.
+    #[arg(short = 'e', long)]
+    exec: bool,
+
+    /// Print additional execution diagnostics to stderr.
+    #[arg(short = 'v', long)]
+    verbose: bool,
+
+    /// Write execution-mode source for the Bash integration instead of spawning a shell.
+    #[arg(long, hide = true)]
+    shell_output: Option<std::path::PathBuf>,
+
     /// Forget the stored conversation id for a thread (use --thread to pick
     /// which one; defaults to the default thread) and exit without sending
     /// anything. Equivalent to guaranteeing the *next* call starts fresh.
@@ -68,6 +82,8 @@ async fn main() -> Result<()> {
     let cfg = Config::load()?;
     let thread = cli.thread.clone().unwrap_or_else(|| cfg.thread.clone());
 
+    // Serialize all state read/modify/write operations across concurrent cm invocations.
+    let _state_lock = state::lock(&cfg.state_dir, &thread)?;
     let mut state = StateFile::load(&cfg.state_dir)?;
 
     if cli.list_threads {
@@ -113,7 +129,22 @@ async fn main() -> Result<()> {
         state.conversation_id(&thread).map(|s| s.to_string())
     };
     let is_new_thread = existing_conversation_id.is_none();
-    let stream = !cli.no_stream && cfg.stream;
+
+    let message = if cli.exec {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
+        let prompts = config::Prompts::load(&cfg.state_dir)?;
+        let execution_context = if cli.shell_output.is_some() {
+            "\n\nThe generated program will be sourced in the user's current Bash shell. Preserve requested changes to the working directory, variables, and functions. For routine failure use return, not exit; invoke programs normally rather than using exec. Do not exit or replace the interactive shell unless explicitly requested."
+        } else {
+            ""
+        };
+        format!("{}\n\n{}{}", message, prompts.exec.replace("{shell}", &shell), execution_context)
+    } else {
+        message
+    };
+
+    // Streaming is disabled in exec mode so only complete responses are executed.
+    let stream = !cli.exec && !cli.no_stream && cfg.stream;
 
     let result = client::send_message(
         &cfg,
@@ -129,18 +160,46 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    if !stream {
-        println!("{}", result.reply);
-    } else if !result.reply.ends_with('\n') {
-        println!();
+    if cli.exec {
+        eprintln!("{}", result.reply);
+        std::io::stderr().flush().ok();
+
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+        if cli.verbose {
+            if cli.shell_output.is_some() {
+                eprintln!("cm: preparing assistant response for the current Bash shell");
+            } else {
+                eprintln!("cm: executing assistant response with {shell}");
+            }
+        }
+        if cli.shell_output.is_none() {
+            Command::new(&shell)
+                .arg("-c")
+                .arg(&result.reply)
+                .status()
+                .map_err(|e| anyhow::anyhow!("executing shell command: {e}"))?;
+        }
+    } else {
+        if !stream {
+            println!("{}", result.reply);
+        } else if !result.reply.ends_with('\n') {
+            println!();
+        }
+        std::io::stdout().flush().ok();
     }
-    std::io::stdout().flush().ok();
 
     if let Some(id) = &result.conversation_id {
         state.set_conversation_id(&thread, id.clone());
         state.save(&cfg.state_dir)?;
         if cli.show_id {
             eprintln!("cm: thread '{thread}' -> {id}");
+        }
+    }
+
+    // Publish source only after the request and state persistence have succeeded.
+    if cli.exec {
+        if let Some(path) = &cli.shell_output {
+            std::fs::write(path, &result.reply)?;
         }
     }
 

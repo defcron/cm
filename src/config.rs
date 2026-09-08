@@ -2,10 +2,27 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use std::path::PathBuf;
 
-/// Resolved runtime configuration, assembled from (in increasing priority):
-/// 1. a `.env` file (cwd, then the state dir, then next to the binary)
-/// 2. real process environment variables
-/// 3. CLI flags (applied by the caller after this struct is built)
+/// Runtime prompt templates loaded from external configuration.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Prompts {
+    pub exec: String,
+}
+
+impl Prompts {
+    pub fn load(state_dir: &std::path::Path) -> Result<Self> {
+        let path = state_dir.join("prompts.yaml");
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            return serde_yaml::from_str(&raw)
+                .with_context(|| format!("parsing {}", path.display()));
+        }
+        serde_yaml::from_str(DEFAULT_PROMPTS_YAML)
+            .context("parsing bundled prompts.yaml")
+    }
+}
+
+const DEFAULT_PROMPTS_YAML: &str = include_str!("../prompts.yaml");
+
+/// Resolved runtime configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub base_url: String,
