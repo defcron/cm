@@ -123,12 +123,43 @@ async fn main() -> Result<()> {
         bail!("empty message - nothing to send");
     }
 
-    let existing_conversation_id = if cli.new {
+    let mut existing_conversation_id = if cli.new {
         None
     } else {
         state.conversation_id(&thread).map(|s| s.to_string())
     };
     let is_new_thread = existing_conversation_id.is_none();
+
+    // Mirror's API starts spewing a lot of automatic first-turn output (file
+    // loading/searching, etc.) when a brand-new conversation is opened
+    // against a Custom GPT/gizmo or a Project. In -e/--exec mode that output
+    // would get executed as shell commands, which we don't want. So when
+    // we're both starting a new thread AND running with -e/--exec, do a
+    // harmless priming turn first (just saying "Hello") to absorb that
+    // automatic output, then send the real message as a follow-up in the
+    // same (now-established) conversation.
+    if is_new_thread && cli.exec {
+        if cli.verbose {
+            eprintln!(
+                "cm: starting a new conversation with -e/--exec - sending an initial \"Hello\" turn first to absorb the API's automatic first-turn output"
+            );
+        }
+        // No system prompt here - it belongs on the real message below,
+        // localized to the turn where -e's execution instructions actually
+        // live, not on this throwaway priming turn.
+        let priming = client::send_message(
+            &cfg,
+            "Hello",
+            None,
+            None,
+            cli.model.as_deref(),
+            false,
+        )
+        .await?;
+        if let Some(id) = priming.conversation_id {
+            existing_conversation_id = Some(id);
+        }
+    }
 
     let message = if cli.exec {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
